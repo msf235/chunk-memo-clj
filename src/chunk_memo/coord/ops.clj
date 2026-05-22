@@ -1,19 +1,26 @@
-(ns chunk-memo.coord.algebra
+(ns chunk-memo.coord.ops
   (:require [chunk-memo.coord.axis :as axis]
-            [chunk-memo.coord.selection :as sel]
+            [chunk-memo.coord.types :as types]
             [clojure.set :as set]))
+
+(defn axis-intersection [a b]
+  (let [xs (set/intersection
+            (set (axis/values a))
+            (set (axis/values b)))]
+    (when (seq xs)
+      (axis/int-set-axis xs))))
 
 (defn intersect-products [a b]
   (when-not (= (count (:axes a))
                (count (:axes b)))
     (throw (ex-info "rank mismatch" {})))
 
-  (let [axes (map axis/axis-intersection
+  (let [axes (map axis-intersection
                   (:axes a)
                   (:axes b))]
     (if (some nil? axes)
-      axis/empty-selection
-      (axis/coord-product axes))))
+      types/empty-selection
+      (types/coord-product axes))))
 
 (defn try-union-products [a b]
   (when-not (= (count (:axes a))
@@ -40,7 +47,7 @@
                   (concat (axis/values ax)
                           (axis/values bx)))))))
 
-      (axis/coord-product out))))
+      (types/coord-product out))))
 
 (defn product-overlap-axes [base remove]
   (mapv
@@ -66,7 +73,7 @@
               overlap   (nth overlap-axes i)
               remainder (remove overlap (axis/values base-axis))
               slab      (when (seq remainder)
-                          (sel/coord-product
+                          (types/coord-product
                            (concat prefix
                                    [(axis/int-set-axis remainder)]
                                    (drop (inc i) base-axes))))]
@@ -83,25 +90,14 @@
 
       ;; Remove covers all of base.
       (covers-product? base overlap-axes)
-      sel/empty-selection
+      types/empty-selection
 
       :else
       (let [parts (slab-products base overlap-axes)]
         (case (count parts)
-          0 sel/empty-selection
+          0 types/empty-selection
           1 (first parts)
-          (sel/simplify (apply sel/coord-union parts)))))))
-
-;; -----------------------------------------------------------------------------
-;; Product algebra
-;; -----------------------------------------------------------------------------
-
-(defn axis-intersection [a b]
-  (let [xs (set/intersection
-            (set (axis/values a))
-            (set (axis/values b)))]
-    (when (seq xs)
-      (axis/int-set-axis xs))))
+          (types/simplify (apply types/coord-union parts)))))))
 
 ;; -----------------------------------------------------------------------------
 ;; Simplification algebra

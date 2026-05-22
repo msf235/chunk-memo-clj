@@ -1,5 +1,5 @@
 (ns chunk-memo.index
-  (:require [chunk-memo.index.selection :as sel]))
+  (:require [chunk-memo.index.ops :as sel]))
 
 (def empty-set sel/empty-set)
 (def interval-set sel/interval-set)

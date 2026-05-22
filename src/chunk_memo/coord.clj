@@ -1,6 +1,6 @@
 (ns chunk-memo.coord
   (:require [chunk-memo.coord.axis :as axis]
-            [chunk-memo.coord.selection :as sel]))
+            [chunk-memo.coord.types :as sel]))
 
 (def int-set-axis axis/int-set-axis)
 (def range-axis axis/range-axis)
