@@ -1,6 +1,7 @@
 (ns chunk-memo.store.filesystem
   (:require [chunk-memo.cache :as cache]
             [chunk-memo.store :as store]
+            [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]))
 
@@ -36,6 +37,16 @@
   "Return the CSV file for `universe-id` and `chunk-id` in `store`."
   [store universe-id chunk-id]
   (io/file (universe-dir store universe-id) (chunk-file-name chunk-id)))
+
+(defn payload-dir
+  "Return the payload directory for `universe-id` and `chunk-id` in `store`."
+  [store universe-id chunk-id]
+  (io/file (universe-dir store universe-id) (str "chunk-" chunk-id)))
+
+(defn payload-file
+  "Return the EDN payload file for `address` in `store`."
+  [store {:keys [universe chunk-id offset]}]
+  (io/file (payload-dir store universe chunk-id) (str offset ".edn")))
 
 (defn address-row
   "Serialize a mapped address to the current simple CSV row format."
@@ -88,10 +99,43 @@
          (map parse-address-row)
          set)))
 
+(defn- edn-file?
+  [file]
+  (and (.isFile file)
+       (str/ends-with? (.getName file) ".edn")))
+
+(defn- parse-payload-address
+  [root file]
+  (let [relative (.relativize (.toPath root) (.toPath file))
+        parts    (mapv str relative)]
+    (when (= 3 (count parts))
+      (let [[universe chunk-dir filename] parts]
+        (when-let [[_ chunk-id offset] (re-matches #"chunk-(\d+)/(\d+)\.edn" (str chunk-dir "/" filename))]
+          {:universe (keyword universe)
+           :chunk-id (Long/parseLong chunk-id)
+           :offset   (Long/parseLong offset)})))))
+
+(defn scan-payload-addresses
+  "Scan every EDN payload file under `store` and return observed mapped addresses."
+  [{:keys [root]}]
+  (if-not (.exists root)
+    #{}
+    (->> (file-seq root)
+         (filter edn-file?)
+         (keep #(parse-payload-address root %))
+         set)))
+
 (extend-type FilesystemStore
   store/CacheStore
   (present-mapped-addresses [store _mapped-cache]
-    (scan-addresses store)))
+    (into (scan-addresses store) (scan-payload-addresses store)))
+  (read-payload [store _mapped-cache item]
+    (edn/read-string (slurp (payload-file store (:mapped-address item)))))
+  (write-payload! [store _mapped-cache item payload]
+    (let [file (payload-file store (:mapped-address item))]
+      (.mkdirs (.getParentFile file))
+      (spit file (pr-str payload))
+      payload)))
 
 (defn write-mapped-cache!
   "Materialize `mapped-cache` in `store` using the simple CSV layout.

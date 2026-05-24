@@ -4,7 +4,11 @@
 
 (defprotocol CacheStore
   (present-mapped-addresses [store mapped-cache]
-    "Return a set of mapped address maps observed in `store`."))
+    "Return a set of mapped address maps observed in `store`.")
+  (read-payload [store mapped-cache item]
+    "Read the payload stored for `item`.")
+  (write-payload! [store mapped-cache item payload]
+    "Store `payload` for `item`."))
 
 (defn expected-mapped-items
   "Return a map of mapped address -> item for every expected item."

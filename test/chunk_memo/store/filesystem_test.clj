@@ -73,7 +73,23 @@
                :present-count 1
                :missing-count 2
                :status :partial}]
-             (store/chunk-statuses store mapped-cache))))))
+              (store/chunk-statuses store mapped-cache))))))
+
+(deftest payload-storage-test
+  (let [store        (fs/filesystem-store (temp-dir))
+        mapped-cache (test-mapped-cache)
+        item         (first (cache/mapped-items mapped-cache))
+        payload      {:result 42}]
+    (testing "writes and reads payloads by mapped address"
+      (is (= payload
+             (store/write-payload! store mapped-cache item payload)))
+      (is (= payload
+             (store/read-payload store mapped-cache item))))
+    (testing "payload files make items present"
+      (let [status (store/cache-status store mapped-cache)]
+        (is (= [(:mapped-address item)]
+               (mapv :mapped-address (:present status))))
+        (is (= 5 (count (:missing status))))))))
 
 (deftest filesystem-validation-test
   (testing "rejects unsafe universe directory names"

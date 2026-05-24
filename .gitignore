@@ -3,3 +3,5 @@
 .cpcache/
 target/
 session*.md
+.session.vim
+**/.DS_Store
