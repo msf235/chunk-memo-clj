@@ -1,6 +1,7 @@
 (ns chunk-memo.layout
   (:require [chunk-memo.coord.axis :as axis]
             [chunk-memo.coord.ops :as coord]
+            [chunk-memo.coord.simplify :as coord-simplify]
             [chunk-memo.index.selection :as index])
   (:import
    [chunk_memo.coord.types
@@ -71,7 +72,7 @@
 (declare validate-coord-selection!)
 
 (defn validate-coord-selection! [layout selection]
-  (let [selection (coord/simplify selection)]
+  (let [selection (coord-simplify/simplify selection)]
     (cond
       (instance? CoordEmpty selection)
       nil
@@ -260,6 +261,6 @@
   ([layout selection]
    (coord-selection->index layout selection 1000000))
   ([layout selection max-enumeration]
-   (let [selection (coord/simplify selection)]
+   (let [selection (coord-simplify/simplify selection)]
      (validate-coord-selection! layout selection)
      (coord-selection->index-unchecked layout selection max-enumeration))))

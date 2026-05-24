@@ -1,6 +1,7 @@
 (ns chunk-memo.coord
   (:require [chunk-memo.coord.axis :as axis]
             [chunk-memo.coord.ops :as ops]
+            [chunk-memo.coord.simplify :as simplify]
             [chunk-memo.coord.types :as types]))
 
 (def int-set-axis axis/int-set-axis)
@@ -14,4 +15,4 @@
 
 (def contains-coord? ops/contains-coord?)
 (def coords ops/coords)
-(def simplify ops/simplify)
+(def simplify simplify/simplify)
