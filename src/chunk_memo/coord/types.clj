@@ -59,5 +59,23 @@
 (defn coord-union? [x]
   (instance? CoordUnion x))
 
+(defn coord-intersection? [x]
+  (instance? CoordIntersection x))
+
+(defn coord-difference? [x]
+  (instance? CoordDifference x))
+
 (defn coord-empty? [x]
   (instance? CoordEmpty x))
+
+(defn axes [selection]
+  (:axes selection))
+
+(defn parts [selection]
+  (:parts selection))
+
+(defn difference-base [selection]
+  (:base selection))
+
+(defn difference-remove [selection]
+  (:remove selection))

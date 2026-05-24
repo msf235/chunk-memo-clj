@@ -1,15 +1,6 @@
 (ns chunk-memo.layout
-  (:require [chunk-memo.coord.axis :as axis]
-            [chunk-memo.coord.ops :as coord]
-            [chunk-memo.coord.simplify :as coord-simplify]
-            [chunk-memo.index.selection :as index])
-  (:import
-   [chunk_memo.coord.types
-    CoordEmpty
-    CoordProduct
-    CoordUnion
-    CoordIntersection
-    CoordDifference]))
+  (:require [chunk-memo.coord :as coord]
+            [chunk-memo.index.selection :as index]))
 
 (defn- row-major-strides [shape]
   (->> (rest shape)
@@ -35,25 +26,17 @@
      (count shape))))
 
 (defn axis-full? [ax dim]
-  (and (instance? chunk_memo.coord.axis.RangeAxis ax)
-       (= 0 (:start ax))
-       (= dim (:stop ax))))
+  (and (= 0 (coord/min-value ax))
+       (= (dec dim) (coord/max-value ax))
+       (= dim (coord/axis-size ax))))
 
 (defn axis-single-value [ax]
-  (cond
-    (and (instance? chunk_memo.coord.axis.IntSetAxis ax)
-         (= 1 (count (:vals ax))))
-    (first (:vals ax))
-
-    (= 1 (axis/axis-size ax))
-    (axis/min-value ax)
-
-    :else
-    nil))
+  (when (= 1 (coord/axis-size ax))
+    (coord/min-value ax)))
 
 (defn validate-product! [layout product]
   (let [{:keys [shape rank]} layout
-        axes (:axes product)]
+        axes (coord/axes product)]
     (when-not (= rank (count axes))
       (throw
        (ex-info "product rank does not match layout rank"
@@ -61,37 +44,37 @@
                  :layout-rank rank})))
 
     (doseq [[i ax dim] (map vector (range) axes shape)]
-      (when (or (< (axis/min-value ax) 0)
-                (>= (axis/max-value ax) dim))
+      (when (or (< (coord/min-value ax) 0)
+                (>= (coord/max-value ax) dim))
         (throw
          (ex-info "axis bounds out of shape"
-                  {:axis i
-                   :bounds [(axis/min-value ax) (axis/max-value ax)]
-                   :dimension-size dim}))))))
+                   {:axis i
+                    :bounds [(coord/min-value ax) (coord/max-value ax)]
+                    :dimension-size dim}))))))
 
 (declare validate-coord-selection!)
 
 (defn validate-coord-selection! [layout selection]
-  (let [selection (coord-simplify/simplify selection)]
+  (let [selection (coord/simplify selection)]
     (cond
-      (instance? CoordEmpty selection)
+      (coord/coord-empty? selection)
       nil
 
-      (instance? CoordProduct selection)
+      (coord/coord-product? selection)
       (validate-product! layout selection)
 
-      (instance? CoordUnion selection)
-      (doseq [part (:parts selection)]
+      (coord/coord-union? selection)
+      (doseq [part (coord/parts selection)]
         (validate-coord-selection! layout part))
 
-      (instance? CoordIntersection selection)
-      (doseq [part (:parts selection)]
+      (coord/coord-intersection? selection)
+      (doseq [part (coord/parts selection)]
         (validate-coord-selection! layout part))
 
-      (instance? CoordDifference selection)
+      (coord/coord-difference? selection)
       (do
-        (validate-coord-selection! layout (:base selection))
-        (validate-coord-selection! layout (:remove selection)))
+        (validate-coord-selection! layout (coord/difference-base selection))
+        (validate-coord-selection! layout (coord/difference-remove selection)))
 
       :else
       (throw
@@ -140,9 +123,9 @@
 
 (defn- whole-layout? [layout product]
   (every? true?
-          (map axis-full?
-               (:axes product)
-               (:shape layout))))
+           (map axis-full?
+                (coord/axes product)
+                (:shape layout))))
 
 (defn- suffix-sizes [layout]
   (->> (:shape layout)
@@ -153,7 +136,7 @@
        vec))
 
 (defn- suffix-full-flags [layout product]
-  (->> (map axis-full? (:axes product) (:shape layout))
+  (->> (map axis-full? (coord/axes product) (:shape layout))
        reverse
        (reductions #(and %1 %2) true)
        rest
@@ -162,7 +145,7 @@
 
 (defn- try-fixed-last-axis [layout product]
   (let [{:keys [rank shape size]} layout
-        axes (:axes product)
+        axes (coord/axes product)
         last-axis-index (dec rank)]
     (when (every?
            true?
@@ -191,13 +174,13 @@
                 [[base-id (+ base-id (nth suffix-size axis-i))]]
 
                 :else
-                (let [ax (nth (:axes product) axis-i)
+                (let [ax (nth (coord/axes product) axis-i)
                       stride (nth strides axis-i)]
                   (mapcat
                    (fn [pos]
                      (rec (inc axis-i)
                           (+ base-id (* pos stride))))
-                   (axis/axis-values ax)))))]
+                    (coord/axis-values ax)))))]
       (index/interval-set (rec 0 0)))))
 
 (defn- coord-product->index [layout product]
@@ -230,37 +213,37 @@
    (coord-selection->index-unchecked layout selection 1000000))
   ([layout selection max-enumeration]
    (cond
-     (instance? CoordEmpty selection)
-     index/empty-set
+      (coord/coord-empty? selection)
+      index/empty-set
 
-     (instance? CoordProduct selection)
-     (coord-product->index layout selection)
+      (coord/coord-product? selection)
+      (coord-product->index layout selection)
 
-     (instance? CoordUnion selection)
-     (index/simplify
-      (apply index/union-set
-             (map #(coord-selection->index-unchecked layout % max-enumeration)
-                  (:parts selection))))
+      (coord/coord-union? selection)
+      (index/simplify
+       (apply index/union-set
+              (map #(coord-selection->index-unchecked layout % max-enumeration)
+                   (coord/parts selection))))
 
-     (instance? CoordIntersection selection)
-     (index/simplify
-      (apply index/intersection-set
-             (map #(coord-selection->index-unchecked layout % max-enumeration)
-                  (:parts selection))))
+      (coord/coord-intersection? selection)
+      (index/simplify
+       (apply index/intersection-set
+              (map #(coord-selection->index-unchecked layout % max-enumeration)
+                   (coord/parts selection))))
 
-     (instance? CoordDifference selection)
-     (index/simplify
-      (index/difference-set
-       (coord-selection->index-unchecked layout (:base selection) max-enumeration)
-       (coord-selection->index-unchecked layout (:remove selection) max-enumeration)))
+      (coord/coord-difference? selection)
+      (index/simplify
+       (index/difference-set
+        (coord-selection->index-unchecked layout (coord/difference-base selection) max-enumeration)
+        (coord-selection->index-unchecked layout (coord/difference-remove selection) max-enumeration)))
 
-     :else
-     (compile-by-enumeration layout selection max-enumeration))))
+      :else
+      (compile-by-enumeration layout selection max-enumeration))))
 
 (defn coord-selection->index
   ([layout selection]
    (coord-selection->index layout selection 1000000))
   ([layout selection max-enumeration]
-   (let [selection (coord-simplify/simplify selection)]
+   (let [selection (coord/simplify selection)]
      (validate-coord-selection! layout selection)
      (coord-selection->index-unchecked layout selection max-enumeration))))
