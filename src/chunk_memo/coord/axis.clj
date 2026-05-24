@@ -6,8 +6,8 @@
 
 (defprotocol Axis
   (contains-value? [axis v])
-  (values [axis])
-  (size [axis])
+  (axis-values [axis])
+  (axis-size [axis])
   (min-value [axis])
   (max-value [axis]))
 
@@ -20,10 +20,10 @@
   (contains-value? [_ v]
     (contains? val-set v))
 
-  (values [_]
+  (axis-values [_]
     vals)
 
-  (size [_]
+  (axis-size [_]
     (count vals))
 
   (min-value [_]
@@ -33,7 +33,7 @@
     (last vals)))
 
 (defn int-set-axis [xs]
-  (let [vals (->> xs distinct sort vec)]
+  (let [vals (->> xs seq distinct sort vec)]
     (when (empty? vals)
       (throw (ex-info "axis cannot be empty" {})))
     (->IntSetAxis vals (set vals))))
@@ -43,10 +43,10 @@
   (contains-value? [_ v]
     (<= start v (dec stop)))
 
-  (values [_]
+  (axis-values [_]
     (range start stop))
 
-  (size [_]
+  (axis-size [_]
     (- stop start))
 
   (min-value [_]
@@ -68,10 +68,10 @@
          (< v stop)
          (zero? (mod (- v start) step))))
 
-  (values [_]
+  (axis-values [_]
     (range start stop step))
 
-  (size [_]
+  (axis-size [_]
     (long (Math/ceil (/ (- stop start)
                         (double step)))))
 
@@ -79,7 +79,7 @@
     start)
 
   (max-value [this]
-    (+ start (* (dec (size this)) step))))
+    (+ start (* (dec (axis-size this)) step))))
 
 (defn strided-axis [start stop step]
   (when (<= step 0)
@@ -91,7 +91,7 @@
                     {:start start :stop stop})))
 
   (let [axis (->StridedAxis start stop step)]
-    (when (zero? (size axis))
+    (when (zero? (axis-size axis))
       (throw (ex-info "StridedAxis must contain at least one value"
                       {:start start
                        :stop stop
@@ -114,7 +114,7 @@
     (int-set-axis [x])
 
     (and (vector? x)
-         (= 3 (count x))
+         (= 4 (count x))
          (= :stride (first x)))
     (let [[_ start stop step] x]
       (strided-axis start stop step))

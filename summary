@@ -1,0 +1,756 @@
+# Chunk Memo / Chunk Cache Architecture Summary
+
+## Overall Goal
+
+You are building a multidimensional memoization/cache system for expensive parameter sweeps.
+
+Core requirements:
+
+```text
+parameter tuples
+    ->
+efficient symbolic selection algebra
+    ->
+flattened row-major index space
+    ->
+chunked completion bitmap index
+    ->
+on-disk payload files
+```
+
+The cache should support:
+
+* single points
+* products
+* unions
+* intersections
+* differences
+* ranges
+* incremental completion
+* chunk-level status
+* parallel execution
+* symbolic region queries
+
+while remaining lightweight and dependency-minimal.
+
+---
+
+# High-Level Design
+
+You converged on a layered architecture:
+
+```text
+semantic parameters
+    ->
+CoordSelection algebra
+    ->
+RowMajorLayout
+    ->
+IndexSelection algebra
+    ->
+chunk-local bitmaps
+    ->
+disk-backed ChunkCache
+```
+
+---
+
+# Core Conceptual Shift
+
+Originally:
+
+```text
+ChunkCache owned:
+  payload storage
+  chunk hashing
+  collators
+  migration logic
+```
+
+Now:
+
+```text
+ChunkCache only owns:
+  completion index
+  parameter mapping
+  payload path planning
+```
+
+The application owns payload serialization.
+
+This was an important simplification.
+
+---
+
+# Final Layering
+
+## `axis.py`
+
+Represents 1D axis selections.
+
+### Main classes
+
+```python
+AxisSelection
+IntSetAxis
+RangeAxis
+StridedAxis
+```
+
+These are symbolic.
+
+Examples:
+
+```python
+RangeAxis(0, 10)
+StridedAxis(0, 100, 5)
+IntSetAxis((1, 7, 9))
+```
+
+You added:
+
+```python
+min_value()
+max_value()
+size()
+```
+
+and symbolic iteration support.
+
+---
+
+# `coord.py`
+
+Represents symbolic multidimensional tuple selections.
+
+## Main classes
+
+```python
+CoordSelection
+CoordEmpty
+CoordProduct
+CoordUnion
+CoordIntersection
+CoordDifference
+```
+
+Important evolution:
+
+Originally `CoordProduct` used normalized tuples.
+
+You later changed it to directly contain symbolic axis objects:
+
+```python
+CoordProduct((
+    RangeAxis(0, 8),
+    IntSetAxis((0,)),
+    IntSetAxis((0,))
+))
+```
+
+This became the core symbolic representation.
+
+---
+
+# Coord Algebra
+
+You implemented symbolic operations:
+
+```python
+_intersect_products
+_try_union_products
+_difference_products
+```
+
+These operate axis-wise.
+
+Example:
+
+```text
+([1,2], [3]) ∪ ([4], [3])
+    ->
+([1,2,4], [3])
+```
+
+Difference decomposition became:
+
+```text
+A x B x C
+minus
+A' x B' x C'
+
+= slabs:
+    (A-A') x B x C
+    A' x (B-B') x C
+    A' x B' x (C-C')
+```
+
+---
+
+# `index.py`
+
+Represents flattened-index symbolic algebra.
+
+## Main classes
+
+```python
+IndexSelection
+EmptySet
+IntervalSet
+StridedSet
+UnionSet
+IntersectionSet
+DifferenceSet
+ChunkSet
+```
+
+This became the flattened equivalent of `coord.py`.
+
+Important insight:
+
+```text
+CoordSelection
+    symbolic tuple space
+
+IndexSelection
+    symbolic flat-index space
+```
+
+---
+
+# `layout.py`
+
+Represents row-major flattening.
+
+This was heavily redesigned.
+
+---
+
+# Original Layout Design
+
+Originally:
+
+```python
+RowMajorLayout(axes=...)
+```
+
+contained semantic value mappings.
+
+Later you separated:
+
+```text
+semantic parameter translation
+```
+
+from:
+
+```text
+positional row-major flattening
+```
+
+which was a major architectural improvement.
+
+---
+
+# Final `RowMajorLayout`
+
+Now assumes:
+
+```text
+all coordinates are already zero-based positions
+```
+
+Example:
+
+```python
+RowMajorLayout((8, 21, 1))
+```
+
+contains only:
+
+```python
+shape
+strides
+```
+
+and flattening logic.
+
+---
+
+# Key Layout Methods
+
+## `coord_to_index`
+
+```python
+coord -> flat integer
+```
+
+## `index_to_coord`
+
+```python
+flat integer -> coord
+```
+
+## `coord_selection_to_index`
+
+Compiles symbolic coordinate selections into symbolic index selections.
+
+Examples:
+
+```text
+CoordProduct
+    ->
+IntervalSet
+
+or
+
+StridedSet
+```
+
+---
+
+# Important Layout Optimizations
+
+You implemented:
+
+## Whole-layout detection
+
+```python
+[:,:,:]
+    ->
+IntervalSet([(0, size)])
+```
+
+## Fastest-axis stride detection
+
+```text
+[:, :, fixed]
+```
+
+becomes:
+
+```python
+StridedSet
+```
+
+without enumeration.
+
+## Recursive interval generation
+
+For mixed symbolic products.
+
+---
+
+# Validation
+
+You discussed:
+
+```text
+should invalid selections clip or error?
+```
+
+You decided:
+
+```text
+invalid selections should raise errors
+```
+
+rather than silently clipping.
+
+---
+
+# `params.py`
+
+This became the semantic/user-facing translation layer.
+
+Major insight:
+
+```text
+semantic parameter values
+!=
+layout positions
+```
+
+Example:
+
+```text
+x = 1..8
+```
+
+must become:
+
+```text
+positions 0..7
+```
+
+before flattening.
+
+---
+
+# `ParamAxis`
+
+Final design:
+
+```python
+ParamAxis(name, start, stop)
+```
+
+with:
+
+```python
+value_to_pos()
+axis_to_pos()
+```
+
+Example:
+
+```python
+ParamAxis("x", 1, 9)
+```
+
+maps:
+
+```text
+semantic:
+    1..8
+
+positions:
+    0..7
+```
+
+---
+
+# `RunParameterSpace`
+
+Provides:
+
+```python
+product(...)
+union(...)
+intersection(...)
+difference(...)
+```
+
+while translating semantic values into positional symbolic selections.
+
+Example:
+
+```python
+space.product(((1, 9), 0, 3))
+```
+
+produces a positional `CoordProduct`.
+
+---
+
+# `chunks.py`
+
+Bridges:
+
+```text
+IndexSelection
+    ->
+chunk-local bitmaps
+```
+
+Important functions:
+
+## `add_flat_range_to_chunks`
+
+Splits global intervals across chunk boundaries.
+
+## `index_selection_to_chunk_bitmaps`
+
+Converts symbolic index selections into:
+
+```python
+dict[chunk_id -> bitmap]
+```
+
+## `chunk_status`
+
+Returns:
+
+```text
+empty
+partial
+complete
+```
+
+---
+
+# Roaring Bitmap Investigation
+
+You initially explored:
+
+```text
+pyroaring / roaring bitmap
+```
+
+but discovered:
+
+* build issues on Python 3.14
+* overhead too large for small chunks
+
+You measured:
+
+```text
+chunk_size ~200
+~50K total points
+```
+
+and concluded:
+
+```text
+plain integer bitsets are likely better
+```
+
+---
+
+# Final Bitmap Design
+
+You replaced Roaring with:
+
+```python
+class BitMap:
+    _bits: int
+```
+
+using Python integers as dense bitsets.
+
+Advantages:
+
+* extremely simple
+* tiny memory footprint
+* fast bit operations
+* serialization trivial
+
+This became the final bitmap backend.
+
+---
+
+# `cache.py`
+
+Final cache design:
+
+```python
+ChunkCache
+```
+
+Responsibilities:
+
+```text
+completion bitmap index
++
+payload path planner
+```
+
+NOT payload serialization.
+
+---
+
+# Important API
+
+## Presence
+
+```python
+contains(params)
+contains_selection(selection)
+```
+
+## Completion
+
+```python
+mark_complete(params)
+mark_selection_complete(selection)
+```
+
+## Paths
+
+```python
+result_path(params)
+chunk_path(chunk_id)
+```
+
+---
+
+# Payload Ownership
+
+Major design decision:
+
+```text
+ChunkCache does NOT read/write payloads.
+```
+
+The user/application owns:
+
+```text
+JSON
+NPY
+pickle
+directories
+HDF5
+etc.
+```
+
+This simplified the system enormously.
+
+---
+
+# `ChunkMemo`
+
+Final user-facing abstraction.
+
+Responsibilities:
+
+```text
+memoization decorator
+cache orchestration
+parameter-space setup
+```
+
+---
+
+# Memoization Design
+
+You still wanted:
+
+```python
+@memo.memoize()
+```
+
+support.
+
+Final design:
+
+```python
+memo = ChunkMemo(
+    root="./cache",
+    axis_spec={
+        "x": range(1, 9),
+        "y": range(21),
+        "z": [3, 4],
+    },
+)
+```
+
+---
+
+# Axis Specification Evolution
+
+Originally:
+
+```python
+space=RunParameterSpace(...)
+```
+
+Later changed to:
+
+```python
+axis_spec=...
+```
+
+to improve usability.
+
+Supported inputs became:
+
+## 1. RunParameterSpace
+
+```python
+RunParameterSpace(...)
+```
+
+## 2. Dict shorthand
+
+```python
+{
+    "x": range(1,9),
+    "y": range(21),
+    "z": [3,4],
+}
+```
+
+## 3. Iterable of ParamAxis
+
+```python
+[
+    ParamAxis(...),
+    ParamAxis(...),
+]
+```
+
+---
+
+# Final Conceptual Architecture
+
+```text
+ChunkMemo
+    user-facing memoization wrapper
+
+ChunkCache
+    completion bitmap index + payload path planner
+
+RunParameterSpace
+    semantic parameter translation
+
+RowMajorLayout
+    positional flattening
+
+CoordSelection
+    symbolic tuple algebra
+
+IndexSelection
+    symbolic flat-index algebra
+
+BitMap
+    chunk-local completion bitset
+```
+
+---
+
+# Important Design Principles You Settled On
+
+## 1. Separate semantic values from positional coordinates
+
+Critical insight.
+
+---
+
+## 2. Symbolic algebra first
+
+Avoid enumerating huge spaces whenever possible.
+
+---
+
+## 3. Chunking only exists in flat index space
+
+Not in coordinate space.
+
+---
+
+## 4. Cache tracks completion, not payload semantics
+
+Payload format belongs to the application.
+
+---
+
+## 5. Keep the backend minimal
+
+You intentionally moved away from:
+
+* heavy database systems
+* roaring bitmap complexity
+* over-general chunk metadata systems
+
+toward:
+
+```text
+simple symbolic compiler
++
+simple bitmap index
++
+filesystem payloads
+```
+
+which matches your actual scale much better.
+

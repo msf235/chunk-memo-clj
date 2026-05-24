@@ -1,12 +1,28 @@
 (ns chunk-memo.coord.ops
   (:require [chunk-memo.coord.axis :as axis]
             [chunk-memo.coord.types :as types]
-            [clojure.set :as set]))
+            [clojure.math.combinatorics :as combo]
+            [clojure.set :as set])
+  (:import
+   [chunk_memo.coord.types
+    CoordEmpty
+    CoordProduct
+    CoordUnion
+    CoordIntersection
+    CoordDifference]))
+
+(defmulti contains-coord?
+  (fn [sel _coord]
+    (type sel)))
+
+(defmulti coords type)
+
+(defmulti simplify type)
 
 (defn axis-intersection [a b]
   (let [xs (set/intersection
-            (set (axis/values a))
-            (set (axis/values b)))]
+             (set (axis/axis-values a))
+             (set (axis/axis-values b)))]
     (when (seq xs)
       (axis/int-set-axis xs))))
 
@@ -31,8 +47,8 @@
          differing 0
          out []]
     (if-let [[ax bx] (first pairs)]
-      (if (= (vec (axis/values ax))
-             (vec (axis/values bx)))
+      (if (= (vec (axis/axis-values ax))
+             (vec (axis/axis-values bx)))
         (recur (rest pairs)
                differing
                (conj out ax))
@@ -44,8 +60,8 @@
            1
            (conj out
                  (axis/int-set-axis
-                  (concat (axis/values ax)
-                          (axis/values bx)))))))
+                   (concat (axis/axis-values ax)
+                           (axis/axis-values bx)))))))
 
       (types/coord-product out))))
 
@@ -53,13 +69,13 @@
   (mapv
    (fn [base-axis remove-axis]
      (set/intersection
-      (set (axis/values base-axis))
-      (set (axis/values remove-axis))))
+       (set (axis/axis-values base-axis))
+       (set (axis/axis-values remove-axis))))
    (:axes base)
    (:axes remove)))
 
 (defn covers-product? [base overlap-axes]
-  (= (mapv #(set (axis/values %)) (:axes base))
+  (= (mapv #(set (axis/axis-values %)) (:axes base))
      overlap-axes))
 
 (defn slab-products [base overlap-axes]
@@ -71,7 +87,7 @@
         out
         (let [base-axis (nth base-axes i)
               overlap   (nth overlap-axes i)
-              remainder (remove overlap (axis/values base-axis))
+              remainder (remove overlap (axis/axis-values base-axis))
               slab      (when (seq remainder)
                           (types/coord-product
                            (concat prefix
@@ -97,8 +113,216 @@
         (case (count parts)
           0 types/empty-selection
           1 (first parts)
-          (types/simplify (apply types/coord-union parts)))))))
+          (simplify (apply types/coord-union parts)))))))
+
+;; -----------------------------------------------------------------------------
+;; Coord enumeration
+;; -----------------------------------------------------------------------------
+
+(defn selection-size [sel]
+  (count (coords sel)))
+
+(defn empty-coords [_sel]
+  '())
+
+(defn product-coords [sel]
+  (apply combo/cartesian-product
+         (map axis/axis-values (:axes sel))))
+
+(defn union-coords [sel]
+  (distinct
+   (mapcat coords (:parts sel))))
+
+(defn intersection-coords [sel]
+  (let [[smallest & rest]
+        (sort-by selection-size (:parts sel))]
+    (filter
+     (fn [coord]
+       (every?
+        #(contains-coord? % coord)
+        rest))
+     (coords smallest))))
+
+(defn difference-coords [sel]
+  (remove
+   #(contains-coord? (:remove sel) %)
+   (coords (:base sel))))
+
+(defmethod coords CoordEmpty [sel]
+  (empty-coords sel))
+
+(defmethod coords CoordProduct [sel]
+  (product-coords sel))
+
+(defmethod coords CoordUnion [sel]
+  (union-coords sel))
+
+(defmethod coords CoordIntersection [sel]
+  (intersection-coords sel))
+
+(defmethod coords CoordDifference [sel]
+  (difference-coords sel))
+
+;; -----------------------------------------------------------------------------
+;; Coord containment
+;; -----------------------------------------------------------------------------
+
+(defn contains-empty? [_sel _coord]
+  false)
+
+(defn contains-product? [sel coord]
+  (let [axes (:axes sel)]
+    (and (= (count coord) (count axes))
+         (every?
+          true?
+          (map axis/contains-value? axes coord)))))
+
+(defn contains-union? [sel coord]
+  (some #(contains-coord? % coord) (:parts sel)))
+
+(defn contains-intersection? [sel coord]
+  (every? #(contains-coord? % coord) (:parts sel)))
+
+(defn contains-difference? [sel coord]
+  (and (contains-coord? (:base sel) coord)
+       (not (contains-coord? (:remove sel) coord))))
+
+(defmethod contains-coord? CoordEmpty [sel coord]
+  (contains-empty? sel coord))
+
+(defmethod contains-coord? CoordProduct [sel coord]
+  (contains-product? sel coord))
+
+(defmethod contains-coord? CoordUnion [sel coord]
+  (contains-union? sel coord))
+
+(defmethod contains-coord? CoordIntersection [sel coord]
+  (contains-intersection? sel coord))
+
+(defmethod contains-coord? CoordDifference [sel coord]
+  (contains-difference? sel coord))
 
 ;; -----------------------------------------------------------------------------
 ;; Simplification algebra
 ;; -----------------------------------------------------------------------------
+
+(defn simplify-empty [sel]
+  sel)
+
+(defn simplify-product [sel]
+  sel)
+
+(defn simplify-union [sel]
+  (let [parts
+        (->> (:parts sel)
+             (map simplify)
+             (remove types/coord-empty?)
+             (mapcat #(if (types/coord-union? %)
+                        (:parts %)
+                        [%]))
+             distinct)]
+
+    (cond
+      (empty? parts)
+      types/empty-selection
+
+      (= 1 (count parts))
+      (first parts)
+
+      :else
+      (loop [remaining parts
+             out []]
+
+        (if-let [x (first remaining)]
+          (let [[merged leftovers]
+                (reduce
+                 (fn [[candidate rest] y]
+                   (if-let [m (and (types/coord-product? candidate)
+                                   (types/coord-product? y)
+                                   (try-union-products candidate y))]
+                     [m rest]
+                     [candidate (conj rest y)]))
+                 [x []]
+                 (rest remaining))]
+
+            (recur leftovers
+                   (conj out merged)))
+
+          (if (= 1 (count out))
+            (first out)
+            (types/->CoordUnion out)))))))
+
+(defn simplify-intersection [sel]
+  (let [parts
+        (->> (:parts sel)
+             (map simplify)
+             (mapcat #(if (instance? CoordIntersection %)
+                        (:parts %)
+                        [%])))
+
+        products (filter types/coord-product? parts)
+        others   (remove types/coord-product? parts)]
+
+    (if (some types/coord-empty? parts)
+      types/empty-selection
+
+      (let [product
+            (when (seq products)
+              (reduce intersect-products products))
+
+            final-parts
+            (cond-> (vec others)
+              product (conj product))]
+
+        (cond
+          (some types/coord-empty? final-parts)
+          types/empty-selection
+
+          (= 1 (count final-parts))
+          (first final-parts)
+
+          :else
+          (types/->CoordIntersection final-parts))))))
+
+(defn simplify-difference [sel]
+  (let [base   (simplify (:base sel))
+        remove (simplify (:remove sel))]
+
+    (cond
+      (types/coord-empty? base)
+      types/empty-selection
+
+      (types/coord-empty? remove)
+      base
+
+      (= base remove)
+      types/empty-selection
+
+      (and (types/coord-product? base)
+           (types/coord-product? remove))
+      (simplify
+       (difference-products base remove))
+
+      (types/coord-union? base)
+      (simplify
+       (apply types/coord-union
+              (map #(types/->CoordDifference % remove)
+                   (:parts base))))
+
+      :else
+      (types/->CoordDifference base remove))))
+
+(defmethod simplify CoordEmpty [sel]
+  (simplify-empty sel))
+
+(defmethod simplify CoordProduct [sel]
+  (simplify-product sel))
+
+(defmethod simplify CoordUnion [sel]
+  (simplify-union sel))
+
+(defmethod simplify CoordIntersection [sel]
+  (simplify-intersection sel))
+
+(defmethod simplify CoordDifference [sel]
+  (simplify-difference sel))
