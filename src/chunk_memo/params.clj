@@ -34,6 +34,17 @@
                        :bounds [start stop]})))
     pos))
 
+(defn pos->value
+  "Translate a zero-based coordinate position to its semantic parameter value."
+  [{:keys [name start stop] :as param-axis} pos]
+  (when-not (<= 0 pos (dec (axis-size param-axis)))
+    (throw (ex-info "parameter position outside axis bounds"
+                    {:axis name
+                     :position pos
+                     :bounds [0 (axis-size param-axis)]
+                     :values [start stop]})))
+  (+ start pos))
+
 (defn- range->pos-axis [param-axis start stop]
   (when-not (< start stop)
     (throw (ex-info "range selection must be non-empty"

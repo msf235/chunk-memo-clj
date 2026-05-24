@@ -1,140 +1,89 @@
 (ns chunk-memo.cache
-  (:refer-clojure :exclude [contains?])
-  (:require [chunk-memo.bitmap :as bitmap]
-            [chunk-memo.chunks :as chunks]
-            [chunk-memo.index.selection :as selection]
+  (:require [chunk-memo.chunks :as chunks]
             [chunk-memo.layout :as layout]
-            [chunk-memo.params :as params]
-            [clojure.java.io :as io]
-            [clojure.string :as str])
-  (:import [java.nio.file Files StandardCopyOption]))
+            [chunk-memo.params :as params]))
 
 (def default-chunk-size 200)
 
-(defrecord LogicalChunkCache [root index-root payload-root space chunk-size chunk-spec])
+(defrecord LogicalChunkCache [space chunk-size chunk-spec])
+(defrecord LogicalCacheUniverse [caches])
+(defrecord IdentityCacheMap [])
+(defrecord MappedChunkCache [universe cache-map])
 
-(defn- mkdirs!
-  [file]
-  (.mkdirs (io/file file))
-  file)
+(defprotocol CacheMap
+  (logical->mapped [cache-map universe address]
+    "Translate a logical address into the mapped address space.")
+  (mapped->logical [cache-map universe address]
+    "Translate a mapped address back into the logical address space."))
 
-(defn- axis-name->str
-  [axis-name]
-  (cond
-    (keyword? axis-name) (name axis-name)
-    (symbol? axis-name)  (name axis-name)
-    :else                (str axis-name)))
+(extend-type IdentityCacheMap
+  CacheMap
+  (logical->mapped [_ _ address]
+    address)
+  (mapped->logical [_ _ address]
+    address))
 
-(defn- json-string
-  [x]
-  (str "\""
-       (-> (str x)
-           (str/replace "\\" "\\\\")
-           (str/replace "\"" "\\\"")
-           (str/replace "\b" "\\b")
-           (str/replace "\f" "\\f")
-           (str/replace "\n" "\\n")
-           (str/replace "\r" "\\r")
-           (str/replace "\t" "\\t"))
-       "\""))
+(defn logical-chunk-cache
+  "Create a logical chunk cache.
 
-(defn- meta-json
-  [{:keys [space chunk-size]}]
-  (let [layout (:layout space)
-        axes   (:axes space)]
-    (str "{\n"
-         "  \"chunk_size\": " chunk-size ",\n"
-         "  \"shape\": [" (str/join ", " (:shape layout)) "],\n"
-         "  \"axes\": [\n"
-         (->> axes
-              (map (fn [{:keys [name start stop]}]
-                     (str "    {\"name\": " (json-string (axis-name->str name))
-                          ", \"start\": " start
-                          ", \"stop\": " stop "}")))
-              (str/join ",\n"))
-         "\n  ]\n"
-         "}\n")))
+  A LogicalChunkCache owns only the parameter-space geometry and chunk algebra.
+  It does not know anything about disk paths, payloads, or completion metadata."
+  ([space]
+   (logical-chunk-cache space default-chunk-size))
+  ([space chunk-size]
+   (->LogicalChunkCache space
+                        chunk-size
+                        (chunks/chunk-spec chunk-size
+                                           (get-in space [:layout :size])))))
 
-(defn- write-meta-once!
-  [{:keys [root] :as cache}]
-  (let [path (io/file root "meta.json")]
-    (when-not (.exists path)
-      (spit path (meta-json cache)))
-    cache))
+(defn identity-cache-map
+  "Create an identity cache map. Logical and mapped addresses are identical."
+  []
+  (->IdentityCacheMap))
 
-(defn chunk-cache
-  "Create a filesystem-backed chunk-completion cache.
+(defn logical-cache-universe
+  "Create a universe of named logical chunk caches."
+  [caches]
+  (when-not (map? caches)
+    (throw (ex-info "logical cache universe requires a map"
+                    {:caches caches})))
+  (doseq [[universe-id cache] caches]
+    (when-not (instance? LogicalChunkCache cache)
+      (throw (ex-info "universe values must be LogicalChunkCache instances"
+                      {:universe universe-id
+                       :cache cache}))))
+  (->LogicalCacheUniverse caches))
 
-  The cache stores chunk-local completion bitmaps below `root/index` and exposes
-  stable payload paths below `root/payloads`. Payload contents are owned by user
-  code; this namespace only plans those paths and tracks completion metadata."
-  ([root space]
-   (chunk-cache root space default-chunk-size))
-  ([root space chunk-size]
-   (let [root         (io/file root)
-         index-root   (io/file root "index")
-         payload-root (io/file root "payloads")
-         chunk-spec   (chunks/chunk-spec chunk-size (get-in space [:layout :size]))
-         cache        (->LogicalChunkCache root index-root payload-root
-                                           space chunk-size chunk-spec)]
-     (mkdirs! index-root)
-     (mkdirs! payload-root)
-     (write-meta-once! cache))))
+(defn mapped-chunk-cache
+  "Create a mapped chunk cache from a logical cache universe and cache map."
+  ([universe]
+   (mapped-chunk-cache universe (identity-cache-map)))
+  ([universe cache-map]
+   (when-not (instance? LogicalCacheUniverse universe)
+     (throw (ex-info "mapped chunk cache requires a LogicalCacheUniverse"
+                     {:universe universe})))
+   (when-not (satisfies? CacheMap cache-map)
+     (throw (ex-info "mapped chunk cache requires a CacheMap"
+                     {:cache-map cache-map})))
+   (->MappedChunkCache universe cache-map)))
 
-;; ---------------------------------------------------------------------------
-;; Paths
-;; ---------------------------------------------------------------------------
+(defn universe-cache
+  "Return the LogicalChunkCache named by `universe-id`."
+  [{:keys [caches]} universe-id]
+  (or (get caches universe-id)
+      (throw (ex-info "unknown cache universe"
+                      {:universe universe-id
+                       :known-universes (set (keys caches))}))))
 
-(defn chunk-path
-  "Return the index bitmap path for `chunk-id`."
-  [{:keys [index-root]} chunk-id]
-  (io/file index-root (format "chunk_%020d.bin" chunk-id)))
-
-(defn result-path
-  "Return the stable payload path for a semantic parameter point.
-
-  The cache does not read or write this file. It only provides a deterministic
-  location for user code to store the corresponding result payload."
-  ([cache params]
-   (result-path cache params ".bin"))
-  ([{:keys [payload-root space]} params suffix]
-   (let [parts    (map (fn [{:keys [name]} value]
-                         (str (axis-name->str name) "=" value))
-                       (:axes space)
-                       params)
-         filename (str (str/join "__" parts) suffix)]
-     (io/file payload-root filename))))
+(defn address-cache
+  "Return the LogicalChunkCache for `address`."
+  [cache-universe {:keys [universe] :as address}]
+  (when-not (contains? address :universe)
+    (throw (ex-info "address requires :universe" {:address address})))
+  (universe-cache cache-universe universe))
 
 ;; ---------------------------------------------------------------------------
-;; Chunk bitmap IO
-;; ---------------------------------------------------------------------------
-
-(defn load-chunk
-  "Read a chunk bitmap, returning an empty bitmap for missing chunks."
-  [cache chunk-id]
-  (let [path (chunk-path cache chunk-id)]
-    (if (.exists path)
-      (bitmap/deserialize (Files/readAllBytes (.toPath path)))
-      bitmap/empty-bitmap)))
-
-(defn- move-replacing!
-  [source target]
-  (Files/move source target
-              (into-array StandardCopyOption
-                          [StandardCopyOption/REPLACE_EXISTING]))
-  nil)
-
-(defn store-chunk!
-  "Persist `bitmap` for `chunk-id` via a temporary file and replace."
-  [cache chunk-id bm]
-  (let [path (chunk-path cache chunk-id)
-        tmp  (io/file (str (.getPath path) ".tmp"))]
-    (Files/write (.toPath tmp) (bitmap/serialize bm)
-                 (make-array java.nio.file.OpenOption 0))
-    (move-replacing! (.toPath tmp) (.toPath path))))
-
-;; ---------------------------------------------------------------------------
-;; Coordinate translation
+;; Logical coordinate translation
 ;; ---------------------------------------------------------------------------
 
 (defn params->pos
@@ -148,97 +97,119 @@
                        :actual   (count param-values)})))
     (mapv params/value->pos axes param-values)))
 
+(defn pos->params
+  "Translate zero-based coordinate positions into semantic parameter values."
+  [{:keys [space]} positions]
+  (let [positions (vec positions)
+        axes      (:axes space)]
+    (when-not (= (count positions) (count axes))
+      (throw (ex-info "wrong position rank"
+                      {:expected (count axes)
+                       :actual   (count positions)})))
+    (mapv params/pos->value axes positions)))
+
 (defn params->index
-  "Translate semantic parameter values into a flat row-major sweep index."
+  "Translate semantic parameter values into a flat row-major index."
   [{:keys [space] :as cache} param-values]
   (layout/coord->index (:layout space) (params->pos cache param-values)))
 
-;; ---------------------------------------------------------------------------
-;; Query API
-;; ---------------------------------------------------------------------------
+(defn index->pos
+  "Translate a flat row-major index into zero-based coordinate positions."
+  [{:keys [space]} index]
+  (layout/index->coord (:layout space) index))
 
-(defn contains?
-  "Return true when the semantic parameter point has been marked complete."
-  [{:keys [chunk-spec] :as cache} param-values]
-  (let [sweep-id          (params->index cache param-values)
-        [chunk-id offset] (chunks/index->chunk-offset chunk-spec sweep-id)]
-    (bitmap/contains-value? (load-chunk cache chunk-id) offset)))
-
-(defn- bitmap-covers-offset-range?
-  [bm start end]
-  (or (>= start end)
-      (let [needed (bitmap/add-range bitmap/empty-bitmap start end)]
-        (= (bitmap/cardinality needed)
-           (bitmap/cardinality (bitmap/intersection bm needed))))))
-
-(defn- chunk-segments
-  "Return `[chunk-id offset-start offset-end]` segments for flat interval `[start end)`."
-  [chunk-size start end]
-  (loop [i start
-         out []]
-    (if (>= i end)
-      out
-      (let [chunk-id     (quot i chunk-size)
-            chunk-start  (* chunk-id chunk-size)
-            chunk-end    (min end (+ chunk-start chunk-size))
-            offset-start (- i chunk-start)
-            offset-end   (- chunk-end chunk-start)]
-        (recur chunk-end
-               (conj out [chunk-id offset-start offset-end]))))))
-
-(defn contains-selection?
-  "Return true only if every point in `selection` is marked complete."
-  [{:keys [space chunk-size] :as cache} coord-selection]
-  (let [index-selection (layout/coord-selection->index (:layout space)
-                                                       coord-selection)]
-    (every?
-     (fn [[start end]]
-       (every? (fn [[chunk-id offset-start offset-end]]
-                 (bitmap-covers-offset-range?
-                  (load-chunk cache chunk-id)
-                  offset-start
-                  offset-end))
-               (chunk-segments chunk-size start end)))
-     (selection/iter-intervals index-selection))))
-
-(defn status-for-chunk
-  "Return `:empty`, `:partial`, or `:complete` for `chunk-id`."
-  [{:keys [chunk-spec] :as cache} chunk-id]
-  (chunks/chunk-status (load-chunk cache chunk-id) chunk-spec chunk-id))
+(defn index->params
+  "Translate a flat row-major index into semantic parameter values."
+  [cache index]
+  (pos->params cache (index->pos cache index)))
 
 ;; ---------------------------------------------------------------------------
-;; Marking API
+;; Logical chunk algebra
 ;; ---------------------------------------------------------------------------
 
-(defn mark-complete!
-  "Mark a single semantic parameter point complete."
-  [{:keys [chunk-spec] :as cache} param-values]
-  (let [sweep-id          (params->index cache param-values)
-        [chunk-id offset] (chunks/index->chunk-offset chunk-spec sweep-id)
-        bm                (-> (load-chunk cache chunk-id)
-                              (bitmap/add offset))]
-    (store-chunk! cache chunk-id bm)))
+(defn chunk-ids
+  "Return every valid chunk id in `cache`."
+  [{:keys [chunk-spec]}]
+  (range (chunks/num-chunks chunk-spec)))
 
-(defn mark-selection-complete!
-  "Mark every point in `coord-selection` complete."
-  [{:keys [space chunk-spec] :as cache} coord-selection]
-  (let [index-selection (layout/coord-selection->index (:layout space)
-                                                       coord-selection)
-        updates         (reduce (fn [acc [start end]]
-                                  (chunks/add-flat-range acc start end chunk-spec))
-                                {}
-                                (selection/iter-intervals index-selection))]
-    (doseq [[chunk-id update] updates]
-      (store-chunk! cache
-                    chunk-id
-                    (bitmap/union (load-chunk cache chunk-id) update))))
-  nil)
+(defn chunk-offsets
+  "Return every valid chunk-local offset in `chunk-id`."
+  [{:keys [chunk-spec]} chunk-id]
+  (range (chunks/chunk-capacity chunk-spec chunk-id)))
 
-;; ---------------------------------------------------------------------------
-;; Convenience
-;; ---------------------------------------------------------------------------
+(defn chunk-offset->index
+  "Translate a chunk-local address into a flat index."
+  [{:keys [chunk-spec]} chunk-id offset]
+  (let [{:keys [chunk-size total-size]} chunk-spec
+        index (+ (* chunk-id chunk-size) offset)]
+    (when-not (<= 0 index (dec total-size))
+      (throw (ex-info "chunk offset out of bounds"
+                      {:chunk-id chunk-id
+                       :offset offset
+                       :total-size total-size})))
+    (let [[expected-chunk-id _] (chunks/index->chunk-offset chunk-spec index)]
+      (when-not (= chunk-id expected-chunk-id)
+        (throw (ex-info "offset outside chunk capacity"
+                        {:chunk-id chunk-id
+                         :offset offset}))))
+    index))
 
-(defn missing
-  "Return parameter points from `params-list` that are not yet complete."
-  [cache params-list]
-  (filterv #(not (contains? cache %)) params-list))
+(defn index->chunk-offset
+  "Translate a flat index into `[chunk-id offset]`."
+  [{:keys [chunk-spec]} index]
+  (chunks/index->chunk-offset chunk-spec index))
+
+(defn address->index
+  "Translate an address map into a flat index within its universe."
+  [universe {:keys [chunk-id offset] :as address}]
+  (let [cache (address-cache universe address)]
+    (chunk-offset->index cache chunk-id offset)))
+
+(defn index->address
+  "Translate a universe-local flat index into an address map."
+  [universe universe-id index]
+  (let [cache             (universe-cache universe universe-id)
+        [chunk-id offset] (index->chunk-offset cache index)]
+    {:universe universe-id
+     :chunk-id chunk-id
+     :offset offset}))
+
+(defn address->params
+  "Translate an address map into semantic parameter values."
+  [universe address]
+  (let [cache (address-cache universe address)]
+    (index->params cache (address->index universe address))))
+
+(defn chunk-items
+  "Return logical item maps for every offset in `chunk-id`."
+  [cache universe-id chunk-id]
+  (mapv (fn [offset]
+          (let [index (chunk-offset->index cache chunk-id offset)]
+            {:address {:universe universe-id
+                       :chunk-id chunk-id
+                       :offset offset}
+             :index index
+             :params (index->params cache index)}))
+        (chunk-offsets cache chunk-id)))
+
+(defn cache-items
+  "Return logical item maps for every item in `cache`."
+  [cache universe-id]
+  (mapcat #(chunk-items cache universe-id %) (chunk-ids cache)))
+
+(defn universe-items
+  "Return logical item maps for every item in every cache universe."
+  [{:keys [caches]}]
+  (mapcat (fn [[universe-id cache]]
+            (cache-items cache universe-id))
+          caches))
+
+(defn mapped-item
+  "Attach the mapped address for one logical item."
+  [{:keys [universe cache-map]} item]
+  (assoc item :mapped-address (logical->mapped cache-map universe (:address item))))
+
+(defn mapped-items
+  "Return item maps with both logical and mapped addresses."
+  [{:keys [universe] :as mapped-cache}]
+  (mapv #(mapped-item mapped-cache %) (universe-items universe)))
