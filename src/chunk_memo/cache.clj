@@ -56,16 +56,16 @@
 
 (defn mapped-chunk-cache
   "Create a mapped chunk cache from a logical cache universe and cache map."
-  ([universe]
-   (mapped-chunk-cache universe (identity-cache-map)))
-  ([universe cache-map]
-   (when-not (instance? LogicalCacheUniverse universe)
+  ([cache-universe]
+   (mapped-chunk-cache cache-universe (identity-cache-map)))
+  ([cache-universe cache-map]
+   (when-not (instance? LogicalCacheUniverse cache-universe)
      (throw (ex-info "mapped chunk cache requires a LogicalCacheUniverse"
-                     {:universe universe})))
+                     {:universe cache-universe})))
    (when-not (satisfies? CacheMap cache-map)
      (throw (ex-info "mapped chunk cache requires a CacheMap"
                      {:cache-map cache-map})))
-   (->MappedChunkCache universe cache-map)))
+   (->MappedChunkCache cache-universe cache-map)))
 
 (defn universe-cache
   "Return the LogicalChunkCache named by `universe-id`."
@@ -75,12 +75,12 @@
                       {:universe universe-id
                        :known-universes (set (keys caches))}))))
 
-(defn address-cache
+(defn cache-for-address
   "Return the LogicalChunkCache for `address`."
-  [cache-universe {:keys [universe] :as address}]
+  [cache-universe {universe-id :universe :as address}]
   (when-not (contains? address :universe)
     (throw (ex-info "address requires :universe" {:address address})))
-  (universe-cache cache-universe universe))
+  (universe-cache cache-universe universe-id))
 
 ;; ---------------------------------------------------------------------------
 ;; Logical coordinate translation
@@ -161,14 +161,14 @@
 
 (defn address->index
   "Translate an address map into a flat index within its universe."
-  [universe {:keys [chunk-id offset] :as address}]
-  (let [cache (address-cache universe address)]
+  [cache-universe {:keys [chunk-id offset] :as address}]
+  (let [cache (cache-for-address cache-universe address)]
     (chunk-offset->index cache chunk-id offset)))
 
 (defn index->address
   "Translate a universe-local flat index into an address map."
-  [universe universe-id index]
-  (let [cache             (universe-cache universe universe-id)
+  [cache-universe universe-id index]
+  (let [cache             (universe-cache cache-universe universe-id)
         [chunk-id offset] (index->chunk-offset cache index)]
     {:universe universe-id
      :chunk-id chunk-id
@@ -176,9 +176,9 @@
 
 (defn address->params
   "Translate an address map into semantic parameter values."
-  [universe address]
-  (let [cache (address-cache universe address)]
-    (index->params cache (address->index universe address))))
+  [cache-universe address]
+  (let [cache (cache-for-address cache-universe address)]
+    (index->params cache (address->index cache-universe address))))
 
 (defn chunk-items
   "Return logical item maps for every offset in `chunk-id`."
@@ -206,10 +206,10 @@
 
 (defn mapped-item
   "Attach the mapped address for one logical item."
-  [{:keys [universe cache-map]} item]
-  (assoc item :mapped-address (logical->mapped cache-map universe (:address item))))
+  [{cache-universe :universe cache-map :cache-map} item]
+  (assoc item :mapped-address (logical->mapped cache-map cache-universe (:address item))))
 
 (defn mapped-items
   "Return item maps with both logical and mapped addresses."
-  [{:keys [universe] :as mapped-cache}]
-  (mapv #(mapped-item mapped-cache %) (universe-items universe)))
+  [{cache-universe :universe :as mapped-cache}]
+  (mapv #(mapped-item mapped-cache %) (universe-items cache-universe)))

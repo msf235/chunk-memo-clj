@@ -52,9 +52,9 @@
                             (cache/universe-cache u :missing))))
 
     (testing "addresses are interpreted within their universe"
-      (is (= base (cache/address-cache u {:universe :base
-                                          :chunk-id 1
-                                          :offset 0})))
+      (is (= base (cache/cache-for-address u {:universe :base
+                                              :chunk-id 1
+                                              :offset 0})))
       (is (= 3 (cache/address->index u {:universe :base
                                         :chunk-id 1
                                         :offset 0})))
@@ -69,8 +69,8 @@
                                        :offset 0})))
       (is (thrown-with-msg? clojure.lang.ExceptionInfo
                             #"address requires :universe"
-                            (cache/address-cache u {:chunk-id 0
-                                                    :offset 0}))))))
+                            (cache/cache-for-address u {:chunk-id 0
+                                                        :offset 0}))))))
 
 (deftest cache-item-enumeration-test
   (let [base (cache/logical-chunk-cache (test-space) 3)
