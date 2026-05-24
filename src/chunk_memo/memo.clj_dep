@@ -117,7 +117,7 @@
                 (atom {}))))
 
 (defn cache-for-params
-  "Return the ChunkCache for `extra-params`, creating it if needed.
+  "Return the LogicalChunkCache for `extra-params`, creating it if needed.
 
   The cache id is derived from the ChunkMemo's base params merged with
   `extra-params`. This mirrors the Python layer's separation between coordinate

@@ -6,6 +6,19 @@
 
 (defrecord ChunkSpec [chunk-size total-size])
 
+(defrecord Chunk [chunk-id offsets])
+
+(defn chunk-ref
+  "Create a chunk specifier.
+
+  `offsets` is either nil, meaning the whole chunk, or a vector of chunk-local
+  offsets. No validation is performed here; this is a lightweight internal
+  value used by execution layers."
+  ([chunk-id]
+   (->Chunk chunk-id nil))
+  ([chunk-id offsets]
+   (->Chunk chunk-id offsets)))
+
 (defn chunk-spec
   "Create a validated chunking specification.
 

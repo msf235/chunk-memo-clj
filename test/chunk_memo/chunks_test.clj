@@ -7,6 +7,13 @@
 (defn bitmap-values [bm]
   (vec (bitmap/bitmap-values bm)))
 
+(deftest chunk-test
+  (testing "creates lightweight chunk specifiers"
+    (is (= {:chunk-id 2 :offsets nil}
+           (select-keys (chunks/chunk-ref 2) [:chunk-id :offsets])))
+    (is (= {:chunk-id 2 :offsets [3 1]}
+           (select-keys (chunks/chunk-ref 2 [3 1]) [:chunk-id :offsets])))))
+
 (deftest chunk-spec-test
   (testing "validates chunk specs"
     (is (= {:chunk-size 3 :total-size 8}

@@ -21,15 +21,18 @@ badd +15 ~/synced/projects/chunk-memo-clj/src/chunk_memo/coord.clj
 badd +14 ~/synced/projects/chunk-memo-clj/src/chunk_memo/coord/ops.clj
 badd +5 ~/synced/projects/chunk-memo-clj/src/chunk_memo/index/selection.clj
 badd +8 test/chunk_memo/coord_test.clj
-badd +1 src/chunk_memo/layout.clj
+badd +14 src/chunk_memo/layout.clj
 badd +1 src/chunk_memo/scratch.clj
-badd +54 src/chunk_memo/bitmap.clj
+badd +38 src/chunk_memo/bitmap.clj
 badd +13 deps.edn
+badd +1 diffview:///Users/matthew/synced/projects/chunk-memo-clj/.git/:0:/src/chunk_memo/bitmap.clj
+badd +1 diffview:///panels/0/DiffviewFilePanel
+badd +163 src/chunk_memo/cache.clj
 argglobal
 %argdel
-edit deps.edn
+edit src/chunk_memo/cache.clj
 argglobal
-balt src/chunk_memo/scratch.clj
+balt src/chunk_memo/bitmap.clj
 setlocal foldmethod=manual
 setlocal foldexpr=0
 setlocal foldmarker={{{,}}}
@@ -40,12 +43,12 @@ setlocal foldnestmax=20
 setlocal foldenable
 silent! normal! zE
 let &fdl = &fdl
-let s:l = 13 - ((12 * winheight(0) + 17) / 34)
+let s:l = 75 - ((20 * winheight(0) + 17) / 34)
 if s:l < 1 | let s:l = 1 | endif
 keepjumps exe s:l
 normal! zt
-keepjumps 13
-normal! 09|
+keepjumps 75
+normal! 039|
 tabnext 1
 if exists('s:wipebuf') && len(win_findbuf(s:wipebuf)) == 0 && getbufvar(s:wipebuf, '&buftype') isnot# 'terminal'
   silent exe 'bwipe ' . s:wipebuf

@@ -11,7 +11,7 @@
 
 (def default-chunk-size 200)
 
-(defrecord ChunkCache [root index-root payload-root space chunk-size chunk-spec])
+(defrecord LogicalChunkCache [root index-root payload-root space chunk-size chunk-spec])
 
 (defn- mkdirs!
   [file]
@@ -75,8 +75,8 @@
          index-root   (io/file root "index")
          payload-root (io/file root "payloads")
          chunk-spec   (chunks/chunk-spec chunk-size (get-in space [:layout :size]))
-         cache        (->ChunkCache root index-root payload-root
-                                    space chunk-size chunk-spec)]
+         cache        (->LogicalChunkCache root index-root payload-root
+                                           space chunk-size chunk-spec)]
      (mkdirs! index-root)
      (mkdirs! payload-root)
      (write-meta-once! cache))))

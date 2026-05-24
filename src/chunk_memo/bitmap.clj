@@ -30,7 +30,7 @@
     bm
     (let [width (- end start)
           mask  (.shiftLeft (.subtract (.shiftLeft BigInteger/ONE width)
-                                        BigInteger/ONE)
+                                       BigInteger/ONE)
                             start)]
       (update bm :bits #(.or ^BigInteger % mask)))))
 
@@ -54,9 +54,9 @@
   (letfn [(step [bits]
             (lazy-seq
              (when-not (zero? (.signum ^BigInteger bits))
-                (let [value (.getLowestSetBit ^BigInteger bits)]
-                  (cons value
-                        (step (.clearBit ^BigInteger bits value)))))))]
+               (let [value (.getLowestSetBit ^BigInteger bits)]
+                 (cons value
+                       (step (.clearBit ^BigInteger bits value)))))))]
     (step (:bits bm))))
 
 (defn serialize
@@ -84,6 +84,6 @@
            (.or ^BigInteger acc
                 (.shiftLeft (BigInteger/valueOf (bit-and 0xff (aget data i)))
                             (* 8 i))))
-          BigInteger/ZERO
+         BigInteger/ZERO
          (range (alength data)))]
     (->BitMap bits)))
